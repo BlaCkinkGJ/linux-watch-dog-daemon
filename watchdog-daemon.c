@@ -54,6 +54,7 @@ int make_tmp_file(char *);
 char *make_tmp_dir(char *);
 bool utmp_cmp(struct utmp*, struct utmp*);
 int utmp_watch(int, struct utmp*);
+int wtmp_watch(int, struct utmp*);
 
 
 int
@@ -65,6 +66,7 @@ main() {
 
 	int tmp_fd = -1;
 	int utmp_fd = -1;
+	int wtmp_fd = -1;
 
 	skeleton_daemon();
 
@@ -84,6 +86,9 @@ main() {
 		if (!(utmp_fd < 0)) {
 			close(utmp_fd);
 		}
+		if (!(wtmp_fd < 0)) {
+			close(wtmp_fd);
+		}
 		return EXIT_FAILURE;
 	}
 
@@ -92,16 +97,18 @@ main() {
 	tmp_fd = make_tmp_file(tmp_file);
 
 	int counter = 10;
-	while (counter--) {
+	do {
 		syslog (LOG_NOTICE, "First daemon started.");
 		utmp_fd = utmp_watch(tmp_fd, utmp_buffer);
+		wtmp_fd = wtmp_watch(tmp_fd, utmp_buffer);
 		sleep(5);
-	}
+	} while (counter--);
 
 	syslog (LOG_NOTICE, "First daemon terminated.");
 	// file close
 	closelog();
 	close(utmp_fd);
+	close(wtmp_fd);
 	close(tmp_fd);
 	// tmp file and folder deletion
 	unlink(tmp_file);
@@ -115,12 +122,9 @@ main() {
 }
 
 bool utmp_cmp(struct utmp *src, struct utmp *dst) {
-	bool is_same_line = strcmp(src->ut_line, dst->ut_line) == 0;
 	bool is_same_user = strcmp(src->ut_user, dst->ut_user) == 0;
-	bool is_same_id = strcmp(src->ut_id, dst->ut_id) == 0;
-	bool is_same_host = strcmp(src->ut_host, dst->ut_host) == 0;
-	syslog(LOG_INFO, "%s %s", src->ut_user, dst->ut_user);
-	return is_same_host && is_same_id && is_same_line && is_same_user;
+	bool is_same_time = src->ut_tv.tv_usec == dst->ut_tv.tv_usec;
+	return is_same_user && is_same_time;
 }
 
 bool is_same_exist(struct utmp *list, struct utmp src) {
@@ -169,6 +173,40 @@ int utmp_watch(int tmp_fd, struct utmp *utmp_list) {
 	}
 	lseek(utmp_fd, 0, SEEK_SET);
 	return utmp_fd;
+}
+
+int wtmp_watch(int tmp_fd, struct utmp *utmp_list) {
+	static int wtmp_fd = -1;
+	static int counter = 0;
+	// because of the utmp already draw the header
+	static bool is_draw_header = false;
+
+	int idx = 0;
+	char tmp_str[BUF_SIZE] = "\0";
+	if(wtmp_fd < 0) { 
+		if ((wtmp_fd = open(_PATH_WTMP, O_RDONLY)) < 0) {
+			syslog(LOG_ERR, "File open error");
+			longjmp(jump_buffer, -1);
+		}
+	}
+
+	if (is_draw_header == true) { 
+		sprintf(tmp_str, "state     user name     last access time\n");
+		strcat(tmp_str, "=========================================\n");
+		write(tmp_fd, tmp_str, strlen(tmp_str));
+		is_draw_header = false;
+	}
+	struct utmp temp;
+	for(idx = 0; read(wtmp_fd, &temp, sizeof(struct utmp)) > 0; idx++) {
+		if (is_same_exist(utmp_list, temp) == false) {
+			memcpy(&utmp_list[counter++], &temp, sizeof(struct utmp));
+
+			sprintf(tmp_str, "logout    %-9s     %s",temp.ut_user, get_utmp_time(temp));
+			write(tmp_fd, tmp_str, strlen(tmp_str));
+		}
+	}
+	lseek(wtmp_fd, 0, SEEK_SET);
+	return wtmp_fd;
 }
 
 char *make_tmp_dir(char *template) {
