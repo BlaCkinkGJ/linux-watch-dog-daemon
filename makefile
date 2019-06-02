@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS= -W -Wall
+CFLAGS= -Werror -Wall -g
 TARGET= watchdog
 
 $(TARGET): watchdog.o

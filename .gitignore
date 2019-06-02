@@ -53,3 +53,6 @@ dkms.conf
 
 # Excutable
 watchdog
+
+# vscode
+.vscode/
