@@ -16,7 +16,15 @@
 #define BUF_SIZE 1024
 #define MAX_UTMP_LINE 1024
 
-jmp_buf jump_buffer;
+static jmp_buf jump_buffer;
+static time_t startup_time;
+static int counter; // list buffer counter
+
+
+struct user_table {
+	pid_t pid;
+	char name[UT_NAMESIZE];
+};
 
 static void 
 skeleton_daemon() {
@@ -69,6 +77,7 @@ main() {
 	int wtmp_fd = -1;
 
 	skeleton_daemon();
+	startup_time = time(NULL);
 
 	// add the exception handler
 	if (setjmp(jump_buffer) != 0) {
@@ -96,7 +105,7 @@ main() {
 	sprintf(tmp_file, "%s/cseXXXXXX", dir);
 	tmp_fd = make_tmp_file(tmp_file);
 
-	int counter = 10;
+	int counter = 14;
 	do {
 		syslog (LOG_NOTICE, "First daemon started.");
 		utmp_fd = utmp_watch(tmp_fd, utmp_buffer);
@@ -144,11 +153,17 @@ static char *get_utmp_time(struct utmp _utmp) {
 
 int utmp_watch(int tmp_fd, struct utmp *utmp_list) {
 	static int utmp_fd = -1;
-	static int counter = 0;
 	static bool is_draw_header = true;
 
 	int idx = 0;
 	char tmp_str[BUF_SIZE] = "\0";
+
+	struct utmp temp;
+
+	if(counter >= MAX_UTMP_LINE) {
+		syslog(LOG_ERR, "MAX UTMP buffer reached");
+		longjmp(jump_buffer, -1);
+	}
 	if(utmp_fd < 0) { 
 		if ((utmp_fd = open(_PATH_UTMP, O_RDONLY)) < 0) {
 			syslog(LOG_ERR, "File open error");
@@ -162,9 +177,8 @@ int utmp_watch(int tmp_fd, struct utmp *utmp_list) {
 		write(tmp_fd, tmp_str, strlen(tmp_str));
 		is_draw_header = false;
 	}
-	struct utmp temp;
 	for(idx = 0; read(utmp_fd, &temp, sizeof(struct utmp)) > 0; idx++) {
-		if (is_same_exist(utmp_list, temp) == false) {
+		if (is_same_exist(utmp_list, temp) == false && temp.ut_type == USER_PROCESS && temp.ut_tv.tv_sec > startup_time) {
 			memcpy(&utmp_list[counter++], &temp, sizeof(struct utmp));
 
 			sprintf(tmp_str, "login     %-9s     %s",temp.ut_user, get_utmp_time(temp));
@@ -175,14 +189,32 @@ int utmp_watch(int tmp_fd, struct utmp *utmp_list) {
 	return utmp_fd;
 }
 
+const char* get_wtmp_user(struct user_table* tab, pid_t pid) {
+	int idx = 0;
+	for (idx = 0; idx < MAX_UTMP_LINE; idx++) {
+		if (tab[idx].pid == pid) {
+			return tab[idx].name;
+		}
+	}
+	return "\0";
+}
+
 int wtmp_watch(int tmp_fd, struct utmp *utmp_list) {
 	static int wtmp_fd = -1;
-	static int counter = 0;
 	// because of the utmp already draw the header
 	static bool is_draw_header = false;
 
 	int idx = 0;
 	char tmp_str[BUF_SIZE] = "\0";
+
+	struct utmp temp;
+	struct user_table wtmp_user[MAX_UTMP_LINE];
+
+	if(counter >= MAX_UTMP_LINE) {
+		syslog(LOG_ERR, "MAX UTMP buffer reached");
+		longjmp(jump_buffer, -1);
+	}
+
 	if(wtmp_fd < 0) { 
 		if ((wtmp_fd = open(_PATH_WTMP, O_RDONLY)) < 0) {
 			syslog(LOG_ERR, "File open error");
@@ -196,12 +228,19 @@ int wtmp_watch(int tmp_fd, struct utmp *utmp_list) {
 		write(tmp_fd, tmp_str, strlen(tmp_str));
 		is_draw_header = false;
 	}
-	struct utmp temp;
+
 	for(idx = 0; read(wtmp_fd, &temp, sizeof(struct utmp)) > 0; idx++) {
-		if (is_same_exist(utmp_list, temp) == false) {
+		wtmp_user[idx].pid = temp.ut_pid;
+		strcpy(wtmp_user[idx].name, temp.ut_user);
+	}
+	lseek(wtmp_fd, 0, SEEK_SET);
+
+	for(idx = 0; read(wtmp_fd, &temp, sizeof(struct utmp)) > 0; idx++) {
+		if (is_same_exist(utmp_list, temp) == false && temp.ut_type == DEAD_PROCESS && temp.ut_tv.tv_sec > startup_time) {
+			syslog(LOG_INFO, "==== SELECTED ====");
 			memcpy(&utmp_list[counter++], &temp, sizeof(struct utmp));
 
-			sprintf(tmp_str, "logout    %-9s     %s",temp.ut_user, get_utmp_time(temp));
+			sprintf(tmp_str, "logout    %-9s     %s", get_wtmp_user(wtmp_user, temp.ut_pid), get_utmp_time(temp));
 			write(tmp_fd, tmp_str, strlen(tmp_str));
 		}
 	}
